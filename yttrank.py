@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 # sql
 import sqlite3
+import csv
 # debug
 import traceback
 from pprint import pprint
@@ -467,15 +468,24 @@ def create_channels_history_table():
     )
     create_table('channels_history', columns, 'id, recordDate')
 
-def create_ranking_history_table():
+def create_history_table():
     columns = (
         ('id', 'TEXT NOT NULL REFERENCES channels(id)'),
         ('recordDate', 'TEXT NOT NULL'),
         ('recordTime', 'TEXT'),
-        ('method', 'TEXT NOT NULL'),
-        ('value', 'INTEGER'),
+        #('startDate', 'TEXT'), # за какой период. NULL если за все время
+        #('endDate', 'TEXT'), # --//--
+        ('period', 'TEXT'), # формат 'YYYY-MM-DD YYYY-MM-DD'. NULL если за все время
+        ('total', 'INTEGER'),
+        ('shorts', 'INTEGER'),
+        ('views', 'INTEGER'),
+        ('shortsViews', 'INTEGER'),
+        ('likes', 'INTEGER'),
+        ('shortsLikes', 'INTEGER'),
+        ('comments', 'INTEGER'),
+        ('shortsComments', 'INTEGER'),
     )
-    create_table('ranking_history', columns, 'id, recordDate, method')
+    create_table('history', columns, 'id, recordDate, period')
 
 
 channels = []
@@ -498,6 +508,7 @@ def init_db():
     create_channels_table()
     create_videos_history_table()
     create_channels_history_table()
+    create_history_table()
 
     db_cursor.execute('SELECT * FROM channels WHERE status IS NOT NULL')
     for row in db_cursor.fetchall():
@@ -803,6 +814,35 @@ FROM videos WHERE channelId = :id
 
 # ----------------------------------------------------------------------
 
+def update_history(period=None):
+    sql_template = """
+    INSERT OR REPLACE INTO history
+    SELECT
+        channelId AS id,
+        date('now') AS recordDate,
+        time('now') AS recordTime,
+        ? AS period,
+        COUNT(*) AS total,
+        SUM(is_shorts) AS shorts,
+        SUM(viewCount) AS views,
+        SUM(CASE WHEN is_shorts = 1 THEN viewCount ELSE 0 END) AS shortsViews,
+        SUM(likeCount) AS likes,
+        SUM(CASE WHEN is_shorts = 1 THEN likeCount ELSE 0 END) AS shortsLikes,
+        SUM(commentCount) AS comments,
+        SUM(CASE WHEN is_shorts = 1 THEN commentCount ELSE 0 END) AS shortsComments
+    FROM videos
+    {} --WHERE date(time) BETWEEN ? AND ?
+    GROUP BY channelId
+"""
+    if period:
+        sql = sql_template.format('WHERE date(time) BETWEEN ? AND ?')
+        db_cursor.execute(sql, (' '.join(period), *period))
+    else:
+        sql = sql_template.format('')
+        db_cursor.execute(sql, (None,))
+
+
+
 def ranking(method='sum', period=None, shorts_factor=None):
     if not period:
         # Текущий месяц
@@ -983,7 +1023,8 @@ def print_table(cursor, title=None):
         col_widths.append(max_len)
 
     # Шаблон для форматирования строки (например, "{:<5} | {:<10} | {:<3}")
-    format_str = ' | '.join(f'{{:<{w}}}' for w in col_widths[:-1])
+    #format_str = ' | '.join(f'{{:<{w}}}' for w in col_widths[:-1])
+    format_str = ' | '.join(f'{{:<{w}.32}}' for w in col_widths[:-1])
     # Последнюю колонку выводим без добавления пробелов в конце строки
     format_str += ' | {}'
     # Рисуем линию-разделитель
@@ -1056,6 +1097,8 @@ def parse_args():
                         help='обновить статистику ВСЕХ видео в БД')
     parser.add_argument('--update-channels-info', action='store_true',
                         help='обновить информацию и статистику всех каналов')
+    parser.add_argument('--update-history', action='store_true',
+                        help='обновить summary')
     parser.add_argument('--ranking', nargs='?', choices=['avg', 'sum',
                                                         'erv', 'erv+shorts'],
                         const='sum', default=None, help='рейтинг (дефолт `sum`). '
@@ -1139,6 +1182,10 @@ def main():
 
     if options.update_channels_info:
         update_channels_info()
+        return
+
+    if options.update_history:
+        update_history(options.period)
         return
 
     if options.add:
